@@ -1,0 +1,11 @@
+.secret/
+data/
+digests/
+__pycache__/
+*.pyc
+*.pyo
+.env
+*.egg-info/
+.venv/
+venv/
+.DS_Store
