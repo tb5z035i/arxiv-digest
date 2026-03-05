@@ -3,8 +3,12 @@
 ## Overview
 
 Automated daily pipeline that fetches new papers from arxiv, filters them by
-research interests, generates a structured Markdown digest, and adds matched
-papers to Zotero with attached PDFs.
+research interests using **LLM-based relevance evaluation**, generates a
+structured Markdown digest, and adds matched papers to Zotero with attached PDFs.
+
+This skill is designed to be **invoked by an upstream agent**. The digest is
+written to a Markdown file; notification/delivery is the upstream agent's
+responsibility.
 
 ## What It Does
 
@@ -12,15 +16,13 @@ Every weekday at **14:00 GMT+8** (06:00 UTC), the pipeline:
 
 1. **Fetches** the daily RSS feed from `rss.arxiv.org` for channels:
    `cs.RO`, `cs.CV`, `cs.AI`, `cs.LG`
-2. **Filters** papers by relevance to two research interest profiles:
-   - **Task Planning & Execution**: algorithms that schedule, plan, and execute
-     atomic actions from natural-language commands
-   - **Edge Inference for Robot Learning**: fast/real-time inference of robot
-     policies on edge hardware (quantization, compression, efficient architectures)
-3. **Enriches** matched papers via the arxiv API to retrieve venue and project
+2. **Pre-filters** papers with cheap keyword matching (~700 → ~150 candidates)
+3. **Evaluates** candidates via an **LLM** that scores each paper 1–5 against
+   the research interest descriptions (see [Relevance Evaluation](#relevance-evaluation))
+4. **Enriches** matched papers via the arxiv API to retrieve venue and project
    page information from the `comment` and `journal_ref` fields
-4. **Generates** a Markdown digest grouped by announce type (new / cross / replace)
-5. **Adds** papers to the Zotero personal library → `automated` collection, with:
+5. **Generates** a Markdown digest grouped by announce type (new / cross / replace)
+6. **Adds** papers to the Zotero personal library → `automated` collection, with:
    - Correct item types: `preprint`, `conferencePaper`, or `journalArticle`
    - PDF attachments (uploaded to Zotero cloud from arxiv)
    - Deduplication via local state + Zotero tag
@@ -30,9 +32,9 @@ Every weekday at **14:00 GMT+8** (06:00 UTC), the pipeline:
 ```
 /workspace/
 ├── arxiv_digest/
-│   ├── config.py              # Configuration: interests, keywords, thresholds
+│   ├── config.py              # Configuration: interests, keywords, thresholds, LLM settings
 │   ├── rss_fetcher.py         # RSS feed fetching & parsing
-│   ├── relevance.py           # Keyword-based relevance scoring
+│   ├── relevance.py           # Two-stage relevance: keyword pre-filter + LLM evaluation
 │   ├── arxiv_enricher.py      # Batch arxiv API queries
 │   ├── venue_detector.py      # Venue & project page detection
 │   ├── digest_generator.py    # Markdown digest rendering
@@ -46,8 +48,6 @@ Every weekday at **14:00 GMT+8** (06:00 UTC), the pipeline:
 │       └── run_YYYY-MM-DD.log     # Pipeline run logs
 ├── requirements.txt
 ├── setup_cron.sh              # Cron job installer
-├── run_digest_cron.sh         # Cron wrapper (auto-generated)
-├── .env.cron                  # Environment variables for cron (auto-generated)
 └── SKILL.md                   # This file
 ```
 
@@ -55,14 +55,17 @@ Every weekday at **14:00 GMT+8** (06:00 UTC), the pipeline:
 
 | Variable | Description | Required |
 |---|---|---|
-| `ZOTERO_API_KEY` | Zotero API key with read/write access | Yes |
-| `ZOTERO_USER_ID` | Zotero user ID (default: `11347333`) | Yes |
+| `ZOTERO_API_KEY` | Zotero API key with read/write access | **Yes** |
+| `ZOTERO_USER_ID` | Zotero user ID (default: `11347333`) | **Yes** |
+| `LLM_API_KEY` | API key for the LLM provider (OpenAI-compatible) | **Yes** (for LLM evaluation) |
+| `LLM_MODEL` | Model name (default: `gpt-4o-mini`) | No |
+| `LLM_BASE_URL` | Custom API base URL for non-OpenAI providers | No |
 
 ### Python Dependencies
 
 ```bash
 pip install -r requirements.txt
-# Requires: feedparser, requests, beautifulsoup4, lxml
+# Requires: feedparser, requests, beautifulsoup4, lxml, openai
 ```
 
 ## How to Run
@@ -95,25 +98,88 @@ chmod +x setup_cron.sh
 
 This installs a cron job that runs at 06:00 UTC (14:00 GMT+8), Monday–Friday.
 
+## Relevance Evaluation
+
+Relevance is determined through a **two-stage pipeline**:
+
+### Stage 1 — Keyword Pre-filter (cheap, local)
+
+A fast keyword scan reduces ~700 daily papers to ~150 candidates, saving LLM
+tokens. The pre-filter threshold (`PREFILTER_THRESHOLD = 1.5`) is intentionally
+low so that borderline papers still reach the LLM.
+
+### Stage 2 — LLM Evaluation
+
+Each candidate paper (title + abstract) is sent to an LLM along with the
+research interest descriptions. The LLM returns:
+
+- **score** (1–5): 1=irrelevant, 3=borderline, 5=highly relevant
+- **interests**: which research interests matched
+- **reason**: one-sentence explanation
+
+Papers with score ≥ `RELEVANCE_THRESHOLD` (default: 3) are included in the
+digest.
+
+Papers are batched (`LLM_BATCH_SIZE = 10` per call) to balance token efficiency
+and API round-trips.
+
+### Upstream Agent Integration
+
+In production, the upstream agent may choose to:
+
+- **Provide its own `LLM_API_KEY`** and let this skill call the LLM directly, or
+- **Arrange sub-agents** for the evaluation step — the interface is the same:
+  each paper needs `relevance_score`, `matched_interests`, and `relevance_reason`
+  populated on the `ArxivPaper` dataclass.
+
+The `relevance.py` module exposes:
+- `prefilter(papers)` → keyword-filtered candidates
+- `llm_evaluate(papers)` → LLM-scored results
+- `filter_relevant(papers)` → full two-stage pipeline (auto-selects LLM or fallback)
+
+### Fallback (no LLM)
+
+When `LLM_API_KEY` is not set, the pipeline falls back to keyword-only scoring
+with a warning. This is functional but less accurate than LLM evaluation.
+
+### Supported LLM Providers
+
+Any **OpenAI-compatible** API works. Examples:
+
+| Provider | `LLM_BASE_URL` | `LLM_MODEL` |
+|---|---|---|
+| OpenAI | *(leave empty)* | `gpt-4o-mini` |
+| Anthropic (via proxy) | `https://api.anthropic.com/v1` | `claude-3-5-haiku-latest` |
+| Ollama (local) | `http://localhost:11434/v1` | `llama3` |
+| vLLM | `http://localhost:8000/v1` | model name |
+| Together AI | `https://api.together.xyz/v1` | model name |
+
 ## How to Modify Research Interests
 
 Edit `arxiv_digest/config.py` → `INTEREST_PROFILES` list. Each profile has:
 - `name`: Display name for the interest
-- `description`: One-line description
-- `keywords`: List of `(phrase, weight)` tuples
+- `description`: One-line description (used in the LLM prompt)
+- `keywords`: List of `(phrase, weight)` tuples (used for the pre-filter stage)
 
-Higher weight = stronger relevance signal. Weights of 3.0+ indicate strong
-matches; 1.0–2.0 are weaker supporting signals.
+For the **LLM evaluation**, the `name` and `description` fields are what matter
+most — write clear, precise descriptions of your research interests.
+
+For the **keyword pre-filter**, the `keywords` list determines which papers
+reach the LLM. Add keywords generously (low weights are fine) to avoid
+filtering out borderline papers before the LLM sees them.
 
 ### Adjusting the Relevance Threshold
 
-In `config.py`, change `RELEVANCE_THRESHOLD` (default: `4.0`):
-- **Lower** (e.g., 3.0) → more papers, higher recall, lower precision
-- **Higher** (e.g., 6.0) → fewer papers, lower recall, higher precision
+In `config.py`:
+
+- `PREFILTER_THRESHOLD` (default: `1.5`): keyword pre-filter cutoff.
+  Lower = more candidates reach the LLM (costs more tokens).
+- `RELEVANCE_THRESHOLD` (default: `3`): LLM score cutoff (1–5 scale).
+  Lower = more papers included; higher = stricter.
 
 ### Adding New RSS Channels
 
-Edit `RSS_CHANNELS` in `config.py` to add more arxiv categories:
+Edit `RSS_CHANNELS` in `config.py`:
 ```python
 RSS_CHANNELS = ["cs.RO", "cs.CV", "cs.AI", "cs.LG", "cs.CL"]
 ```
@@ -140,34 +206,19 @@ On each run, local state is synced with Zotero before checking for new papers.
 - **arxiv RSS updates**: ~05:00 UTC (midnight Eastern Time)
 - **Pipeline runs**: 06:00 UTC (1 hour buffer)
 - **No weekend runs**: arxiv doesn't publish on Saturday/Sunday
-- **Skip days**: The RSS feed itself skips Saturday and Sunday
 
 If the arxiv RSS update time changes, adjust the cron schedule in `setup_cron.sh`.
 
-## Troubleshooting
+## Output
 
-### No papers matched
-- Check `RELEVANCE_THRESHOLD` in config — it may be too high
-- Verify RSS feed is working: `curl https://rss.arxiv.org/rss/cs.RO | head`
-- Check the run log in `output/run_YYYY-MM-DD.log`
+### Digest Location
 
-### Zotero items not created
-- Verify `ZOTERO_API_KEY` and `ZOTERO_USER_ID` environment variables
-- Check API key permissions (needs read/write access to personal library)
-- Check run log for error messages
+Digests are written to `arxiv_digest/output/digest_YYYY-MM-DD.md`.
 
-### PDF upload failures
-- arxiv may rate-limit PDF downloads; the pipeline has a 2-second delay between uploads
-- Check disk space in `/tmp` (PDFs are downloaded to temp directory)
-- Zotero storage quota may be exceeded — check at zotero.org
+The upstream agent is responsible for delivering the digest (e.g., email, Slack,
+chat message). This skill only generates the file.
 
-### Cron job not running
-- Verify cron service: `service cron status`
-- Check cron logs: `grep CRON /var/log/syslog`
-- Verify env file: `cat /workspace/.env.cron`
-- Test wrapper: `/workspace/run_digest_cron.sh`
-
-## Output Digest Format
+### Digest Format
 
 Each paper in the digest includes:
 - **arXiv link** (clickable)
@@ -176,4 +227,34 @@ Each paper in the digest includes:
 - **Announce type** (🆕 new / 🔀 cross / 🔄 replace / 🔁 replace-cross)
 - **Authors**
 - **Abstract** (full text)
-- **Why Relevant** (which keywords matched, in title or abstract)
+- **Why Relevant** (LLM-generated explanation, or keyword matches in fallback mode)
+
+## Troubleshooting
+
+### No papers matched
+- Check that `LLM_API_KEY` is set (keyword fallback is less accurate)
+- Check `RELEVANCE_THRESHOLD` — lower it if the LLM is too strict
+- Check `PREFILTER_THRESHOLD` — lower it if too few candidates reach the LLM
+- Verify RSS feed: `curl https://rss.arxiv.org/rss/cs.RO | head`
+- Check `output/run_YYYY-MM-DD.log`
+
+### LLM evaluation issues
+- Verify `LLM_API_KEY` is valid for the configured provider
+- If using a non-OpenAI provider, set `LLM_BASE_URL`
+- Check the log for "LLM API call failed" messages
+- Reduce `LLM_BATCH_SIZE` if hitting token limits
+
+### Zotero items not created
+- Verify `ZOTERO_API_KEY` and `ZOTERO_USER_ID` environment variables
+- Check API key permissions (needs read/write access to personal library)
+
+### PDF upload failures
+- arxiv may rate-limit PDF downloads (2-second delay is built in)
+- Check disk space in `/tmp`
+- Zotero storage quota may be exceeded
+
+### Cron job not running
+- Verify cron service: `service cron status`
+- Check cron logs: `grep CRON /var/log/syslog`
+- Verify env file: `cat /workspace/.env.cron`
+- Test wrapper: `/workspace/run_digest_cron.sh`
