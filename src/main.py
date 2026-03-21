@@ -19,7 +19,7 @@ import config  # noqa: E402
 from arxiv_fetcher import fetch_papers  # noqa: E402
 from venue_detector import detect_venue, detect_venue_from_html  # noqa: E402
 from project_page_finder import find_project_page, fetch_project_page_html  # noqa: E402
-from digest_writer import write_digest  # noqa: E402
+from digest_writer import write_digest, write_discord_components  # noqa: E402
 from zotero_client import ZoteroClient  # noqa: E402
 
 logging.basicConfig(
@@ -182,6 +182,51 @@ def _sync_zotero(papers: list) -> None:
 
 
 # ------------------------------------------------------------------
+# discord
+# ------------------------------------------------------------------
+
+
+def cmd_discord(args):
+    """Generate Discord Components v2 JSON for relevant papers."""
+    config.load_env()
+
+    papers_path = config.DATA_DIR / "papers.json"
+    with open(papers_path, encoding="utf-8") as fh:
+        all_papers = json.load(fh)
+
+    with open(args.relevance, encoding="utf-8") as fh:
+        relevance = json.load(fh)
+
+    by_id = {p["arxiv_id"]: p for p in all_papers}
+
+    relevant: list = []
+    for r in relevance:
+        if not r.get("is_relevant"):
+            continue
+        aid = r["arxiv_id"]
+        paper = by_id.get(aid)
+        if paper is None:
+            logger.warning("Relevant paper %s not in papers.json — skipping", aid)
+            continue
+        paper["relevance_theme"] = r.get("theme", "")
+        paper["relevance_reason"] = r.get("reason", "")
+        relevant.append(paper)
+
+    _enrich_papers(relevant)
+
+    messages = write_discord_components(relevant)
+    output = config.DATA_DIR / "discord_components.json"
+    with open(output, "w", encoding="utf-8") as fh:
+        json.dump(messages, fh, indent=2, ensure_ascii=False)
+
+    logger.info("Discord components written to %s", output)
+    print(f"\n{'=' * 60}")
+    print(f"Generated {len(messages)} Discord message(s)")
+    print(f"Output: {output}")
+    print(f"{'=' * 60}")
+
+
+# ------------------------------------------------------------------
 # CLI
 # ------------------------------------------------------------------
 
@@ -204,12 +249,21 @@ def main():
         help="Write digest but skip Zotero sync",
     )
 
+    disc = sub.add_parser("discord", help="Generate Discord Components v2 JSON")
+    disc.add_argument(
+        "--relevance",
+        required=True,
+        help="Path to relevance.json produced by the agent",
+    )
+
     args = parser.parse_args()
 
     if args.command == "fetch":
         cmd_fetch(args)
     elif args.command == "process":
         cmd_process(args)
+    elif args.command == "discord":
+        cmd_discord(args)
 
 
 if __name__ == "__main__":

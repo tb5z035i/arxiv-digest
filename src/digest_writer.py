@@ -1,5 +1,6 @@
 """Markdown digest writer for relevant arXiv papers."""
 
+import json
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -65,3 +66,70 @@ def write_digest(
     Path(output_path).parent.mkdir(parents=True, exist_ok=True)
     Path(output_path).write_text(content, encoding="utf-8")
     return output_path
+
+
+def write_discord_components(
+    papers: list,
+    date_str: Optional[str] = None,
+) -> list[dict]:
+    """Generate Discord Components v2 payloads for the digest.
+
+    Returns a list of component payloads, one per theme group.
+    """
+    if date_str is None:
+        date_str = datetime.now().strftime("%Y-%m-%d")
+
+    # Group papers by theme
+    theme_a = [p for p in papers if p.get("relevance_theme") == "theme_a"]
+    theme_b = [p for p in papers if p.get("relevance_theme") == "theme_b"]
+
+    messages = []
+
+    # Theme A message
+    if theme_a:
+        blocks = [
+            {
+                "type": "text",
+                "text": f"🔖 **arXiv Digest — {date_str}**\n**cs.RO — {len(papers)} relevant papers**",
+            },
+            {
+                "type": "text",
+                "text": f"**📋 Theme A — NL → Atomic Capability Planning / Execution ({len(theme_a)} papers)**",
+            },
+        ]
+        for paper in theme_a:
+            blocks.extend(_paper_to_blocks(paper))
+        messages.append({"components": {"blocks": blocks, "reusable": False}})
+
+    # Theme B message
+    if theme_b:
+        blocks = [
+            {
+                "type": "text",
+                "text": f"**⚡ Theme B — Edge-Efficient Robot Learning Inference ({len(theme_b)} papers)**",
+            },
+        ]
+        for paper in theme_b:
+            blocks.extend(_paper_to_blocks(paper))
+        messages.append({"components": {"blocks": blocks, "reusable": False}})
+
+    return messages
+
+
+def _paper_to_blocks(paper: dict) -> list[dict]:
+    """Convert a single paper to Discord component blocks."""
+    arxiv_id = paper.get("arxiv_id", "")
+    arxiv_url = paper.get("arxiv_url", f"https://arxiv.org/abs/{arxiv_id}")
+    venue = paper.get("venue") or "arXiv preprint"
+    pp = paper.get("project_page")
+    reason = paper.get("relevance_reason", "")
+
+    # Build nested content with unicode bullets and fullwidth spaces
+    lines = [f"**•** {paper['title']}"]
+    lines.append(f"　**•** [{arxiv_id}](<{arxiv_url}>) — {venue}")
+    if pp:
+        lines.append(f"　**•** 📎 <{pp}>")
+    if reason:
+        lines.append(f"　**•** {reason}")
+
+    return [{"type": "text", "text": "\n".join(lines)}]

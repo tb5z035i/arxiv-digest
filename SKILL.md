@@ -127,6 +127,25 @@ This command:
 
 Append `--dry-run` to skip the Zotero sync (useful for testing).
 
+#### Discord Components v2 Output
+
+For Discord presentation, use the Components v2 formatter which generates
+hierarchical, theme-grouped messages:
+
+```python
+from src.digest_writer import write_discord_components
+
+# After loading papers and relevance data
+messages = write_discord_components(relevant_papers, date_str="2026-03-19")
+# Returns list of component payloads, one per theme
+```
+
+**Format features:**
+- One Discord message per theme (Theme A / Theme B)
+- Unicode bullets (•) with fullwidth spaces (U+3000) for visual hierarchy
+- Bold `•` for paper titles, indented `•` for arXiv links, venues, and relevance reasons
+- Project page links shown inline when available
+
 After this step, **present the contents of `digests/YYYY-MM-DD.md`** to
 the user as the daily report.
 
