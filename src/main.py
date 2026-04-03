@@ -61,6 +61,40 @@ def cmd_fetch(_args):
 
 
 # ------------------------------------------------------------------
+# judge (sequential evaluation)
+# ------------------------------------------------------------------
+
+
+def cmd_judge(args):
+    """Judge papers for relevance using LLM (sequential, no subagents)."""
+    config.load_env()
+
+    papers_path = config.DATA_DIR / "papers.json"
+    with open(papers_path, encoding="utf-8") as fh:
+        papers = json.load(fh)
+
+    logger.info("Judging %d papers sequentially", len(papers))
+
+    # Import here to avoid circular dependencies
+    from judge_relevance import judge_papers_sequential
+
+    results = judge_papers_sequential(papers)
+
+    output = config.DATA_DIR / "relevance.json"
+    with open(output, "w", encoding="utf-8") as fh:
+        json.dump(results, fh, indent=2, ensure_ascii=False)
+
+    relevant = [r for r in results if r.get("is_relevant")]
+    logger.info("Found %d relevant papers", len(relevant))
+
+    print(f"\n{'=' * 60}")
+    print(f"Judged {len(papers)} papers")
+    print(f"Relevant: {len(relevant)}")
+    print(f"Output: {output}")
+    print(f"{'=' * 60}")
+
+
+# ------------------------------------------------------------------
 # process
 # ------------------------------------------------------------------
 
@@ -236,6 +270,7 @@ def main():
     sub = parser.add_subparsers(dest="command", required=True)
 
     sub.add_parser("fetch", help="Fetch today's papers from arXiv")
+    sub.add_parser("judge", help="Judge fetched papers for relevance")
 
     proc = sub.add_parser("process", help="Process relevant papers")
     proc.add_argument(
@@ -260,6 +295,8 @@ def main():
 
     if args.command == "fetch":
         cmd_fetch(args)
+    elif args.command == "judge":
+        cmd_judge(args)
     elif args.command == "process":
         cmd_process(args)
     elif args.command == "discord":

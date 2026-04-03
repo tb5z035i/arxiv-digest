@@ -59,7 +59,8 @@ class ZoteroClient:
 
         for item in items:
             extra = item.get("data", {}).get("extra", "")
-            m = re.search(r"arXiv:\s*(\d{4}\.\d{4,5})", extra)
+            # More flexible regex to match arXiv IDs
+            m = re.search(r"arXiv[:\s]*(\d{4}\.\d{4,})", extra, re.IGNORECASE)
             if m:
                 ids.add(m.group(1))
         return ids
