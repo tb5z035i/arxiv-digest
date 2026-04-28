@@ -1,14 +1,11 @@
 ---
 name: arxiv-digest
-description: >
-  Fetch daily arXiv announcements (cs.RO), filter by research relevance,
-  generate a structured markdown digest, and sync matched papers to a
-  Zotero collection with arXiv PDFs attached.
+description: "Fetch daily arXiv cs.RO announcements, filter by research relevance using LLM subagents, generate a structured markdown digest, and sync matched papers to a Zotero collection with arXiv PDFs attached. Use when the user asks for new robotics papers, arXiv updates, daily paper digests, research paper filtering, or syncing arXiv papers to Zotero."
 ---
 
 # arXiv Daily Digest
 
-All paths below are relative to this skill's root directory.
+All paths are relative to this skill's root directory.
 
 ## Quick reference
 
@@ -25,8 +22,7 @@ All paths below are relative to this skill's root directory.
 
 ## Invocation protocol
 
-This is a **three-step** skill. Execute the steps in order.
-All shell commands assume the working directory is the skill root.
+Execute the three steps below in order. All shell commands assume the working directory is the skill root.
 
 ### Step 1 — Fetch papers
 
@@ -38,6 +34,8 @@ python src/main.py fetch
 Fetches the arXiv RSS Atom feed for `cs.RO`, enriches each paper with
 metadata from the arXiv Search API, filters to `new` and `cross`
 announcements, and writes the result to `data/papers.json`.
+
+**Checkpoint:** Verify `data/papers.json` exists and is non-empty before proceeding. If the feed returns no papers (weekends, holidays, or network errors), stop and report to the user.
 
 ### Step 2 — Judge relevance
 
@@ -75,6 +73,8 @@ batch and returns a JSON array of verdicts.
 
 The file must contain an entry for **every** paper in `data/papers.json`,
 including irrelevant ones (`is_relevant: false`).
+
+**Checkpoint:** Verify `data/relevance.json` has the same number of entries as `data/papers.json`. If any papers are missing, re-run the judgment for the missing batch before proceeding.
 
 #### Research interests
 
@@ -149,6 +149,8 @@ messages = write_discord_components(relevant_papers, date_str="2026-03-19")
 After this step, **present the contents of `digests/YYYY-MM-DD.md`** to
 the user as the daily report.
 
+**Error recovery:** If Zotero sync fails (auth error, rate limit), re-run with `--dry-run` to still produce the digest, then retry the sync separately. If subagent batches time out in Step 2, reduce batch size to ≤ 15 and retry the failed batch.
+
 ---
 
 ## Scheduling notes
@@ -184,8 +186,3 @@ ZOTERO_API_KEY=<your key>
 ZOTERO_USER_ID=<your user id>
 ```
 
----
-
-## Attribution
-
-Thank you to arXiv for use of its open access interoperability.
